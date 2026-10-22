@@ -4,84 +4,148 @@ import {
   Button,
   Card,
   CardContent,
+  Link,
   Stack,
   TextField,
   Typography,
 } from '@kyc/ui'
-import { useState } from 'react'
-import { useNavigate } from 'react-router'
+import { useRef, useState } from 'react'
+import { redirect, useNavigate, type NavigateFunction } from 'react-router'
 
+import { accountAccessHref } from '../../-return-target'
+import {
+  ApplicantApplicationApiError,
+  getApplicantApplicationForm,
+  saveApplicantApplicationForm,
+  uploadApplicantApplicationDocumentEvidence,
+  type ApplicantApplicationAnswers,
+  type ApplicantApplicationFormDocument,
+  type ApplicantApplicationStep,
+} from '../../../api/applicant-applications'
 import styles from '../../application-step.module.css'
 
 import type { Route } from './+types/$step'
 
-const fields = {
+type FormLoaderData =
+  | { kind: 'ready'; form: ApplicantApplicationFormDocument }
+  | { kind: 'error'; status: number; message: string }
+
+const fields: Record<
+  ApplicantApplicationStep,
+  { key: keyof ApplicantApplicationAnswers; label: string; type?: string }[]
+> = {
   'personal-details': [
-    'Name',
-    'Date of birth',
-    'Country',
-    'Nationality',
-    'Email',
-    'Phone',
+    { key: 'name', label: 'Name' },
+    { key: 'dateOfBirth', label: 'Date of birth', type: 'date' },
+    { key: 'country', label: 'Country' },
+    { key: 'nationality', label: 'Nationality' },
+    { key: 'email', label: 'Email', type: 'email' },
+    { key: 'phone', label: 'Phone', type: 'tel' },
   ],
   'identity-and-address': [
-    'Document type',
-    'Document number',
-    'Document country',
-    'Expiry',
-    'Street',
-    'City',
-    'Postal code',
-    'Residential country',
+    { key: 'documentType', label: 'Document type' },
+    { key: 'documentNumber', label: 'Document number' },
+    { key: 'documentCountry', label: 'Document country' },
+    { key: 'expiry', label: 'Expiry', type: 'date' },
+    { key: 'street', label: 'Street' },
+    { key: 'city', label: 'City' },
+    { key: 'postal', label: 'Postal code' },
+    { key: 'residentialCountry', label: 'Residential country' },
   ],
-} as const
+}
+
+const answerKeys: Record<
+  ApplicantApplicationStep,
+  (keyof ApplicantApplicationAnswers)[]
+> = {
+  'personal-details': [
+    'name',
+    'dateOfBirth',
+    'country',
+    'nationality',
+    'email',
+    'phone',
+    'consentConfirmed',
+  ],
+  'identity-and-address': [
+    'documentType',
+    'documentNumber',
+    'documentCountry',
+    'expiry',
+    'street',
+    'city',
+    'postal',
+    'residentialCountry',
+  ],
+}
+
+export async function clientLoader({
+  params,
+  request,
+}: Route.ClientLoaderArgs): Promise<FormLoaderData | null> {
+  if (params.step === 'review') return null
+  if (!isApplicationStep(params.step)) {
+    return {
+      kind: 'error',
+      status: 404,
+      message: 'This application step could not be found.',
+    }
+  }
+
+  try {
+    return {
+      kind: 'ready',
+      form: await getApplicantApplicationForm(params.applicationId),
+    }
+  } catch (error) {
+    const status =
+      error instanceof ApplicantApplicationApiError ? error.status : 0
+    if (status === 401) {
+      throw redirect(
+        accountAccessHref('/sign-in', new URL(request.url).pathname),
+      )
+    }
+    return {
+      kind: 'error',
+      status,
+      message:
+        error instanceof Error
+          ? error.message
+          : 'The saved form could not be loaded. Please try again.',
+    }
+  }
+}
 
 export default function CurrentApplicationStepPage({
   params,
+  loaderData,
 }: Route.ComponentProps) {
   const navigate = useNavigate()
-  const step =
-    params.step === 'identity-and-address'
-      ? 'identity-and-address'
-      : 'personal-details'
-  const [missing, setMissing] = useState(false)
-  const [saved, setSaved] = useState(false)
-  const advance = () => {
-    const form = document.querySelector('form')
-    if (form && !form.reportValidity()) return
-    setMissing(false)
-    setSaved(true)
-    if (step === 'personal-details')
-      void navigate(
-        `/applications/${params.applicationId}/identity-and-address`,
-      )
-    else void navigate(`/applications/${params.applicationId}/review`)
-  }
-
   if (params.step === 'review') {
     return (
       <main className={styles.reviewPage}>
         <Card className={styles.reviewCard}>
           <CardContent>
-            <Stack spacing={2}>
+            <Stack
+              component="form"
+              onSubmit={(event) => {
+                event.preventDefault()
+                if (!event.currentTarget.reportValidity()) return
+                void navigate(`/applications/${params.applicationId}/submitted`)
+              }}
+              spacing={2}
+            >
               <Typography component="h1" variant="heading">
                 Review application
               </Typography>
               <Typography>Your application is ready for review.</Typography>
               <label>
-                <input type="checkbox" /> I confirm the information is complete
-                and accurate.
+                <input required type="checkbox" /> I confirm the information is
+                complete and accurate.
               </label>
+              <Button type="submit">Submit</Button>
               <Button
-                onClick={() =>
-                  void navigate(
-                    `/applications/${params.applicationId}/submitted`,
-                  )
-                }
-              >
-                Submit
-              </Button>
-              <Button
+                type="button"
                 variant="secondary"
                 onClick={() =>
                   void navigate(
@@ -98,6 +162,154 @@ export default function CurrentApplicationStepPage({
     )
   }
 
+  if (loaderData?.kind === 'error') {
+    return (
+      <main className={styles.page}>
+        <Alert role="alert" severity="error">
+          {loaderData.message}
+          {loaderData.status === 401 ? (
+            <Link
+              href={accountAccessHref(
+                '/sign-in',
+                `/applications/${params.applicationId}/${params.step}`,
+              )}
+            >
+              Sign in
+            </Link>
+          ) : null}
+        </Alert>
+      </main>
+    )
+  }
+
+  if (!loaderData || loaderData.kind !== 'ready') return null
+
+  return (
+    <LoadedApplicationStep
+      key={`${params.applicationId}:${params.step}:${loaderData.form.data.id}`}
+      applicationId={params.applicationId}
+      form={loaderData.form}
+      navigate={navigate}
+      step={params.step as ApplicantApplicationStep}
+    />
+  )
+}
+
+function LoadedApplicationStep({
+  applicationId,
+  form,
+  navigate,
+  step,
+}: {
+  applicationId: string
+  form: ApplicantApplicationFormDocument
+  navigate: NavigateFunction
+  step: ApplicantApplicationStep
+}) {
+  const [currentForm, setCurrentForm] = useState(form)
+  const [answers, setAnswers] = useState<ApplicantApplicationAnswers>(
+    form.data.attributes.answers,
+  )
+  const [error, setError] = useState<string>()
+  const [sessionExpired, setSessionExpired] = useState(false)
+  const [saved, setSaved] = useState(false)
+  const [isSaving, setIsSaving] = useState(false)
+  const [evidenceFile, setEvidenceFile] = useState<File>()
+  const savingRef = useRef(false)
+  const evidenceInput = useRef<HTMLInputElement>(null)
+
+  function updateAnswer(
+    key: keyof ApplicantApplicationAnswers,
+    value: string | boolean,
+  ) {
+    setAnswers((current) => ({ ...current, [key]: value }))
+    setSaved(false)
+    setError(undefined)
+    setSessionExpired(false)
+  }
+
+  async function saveDraft(): Promise<boolean> {
+    if (savingRef.current) return false
+    savingRef.current = true
+    setIsSaving(true)
+    setError(undefined)
+    setSessionExpired(false)
+    setSaved(false)
+
+    const stepAnswers = Object.fromEntries(
+      answerKeys[step].flatMap((key) =>
+        answers[key] === undefined ? [] : [[key, answers[key]]],
+      ),
+    ) as ApplicantApplicationAnswers
+
+    try {
+      const updatedForm = await saveApplicantApplicationForm(
+        applicationId,
+        currentForm.data.id,
+        step,
+        stepAnswers,
+        currentForm.data.attributes.version,
+      )
+      setCurrentForm(updatedForm)
+      setAnswers((current) => ({
+        ...current,
+        ...updatedForm.data.attributes.answers,
+      }))
+
+      if (step === 'identity-and-address' && evidenceFile) {
+        const uploadedEvidence =
+          await uploadApplicantApplicationDocumentEvidence(
+            applicationId,
+            evidenceFile,
+          )
+        if (!uploadedEvidence.data.attributes.present) {
+          throw new ApplicantApplicationApiError(
+            201,
+            'The document upload could not be confirmed.',
+          )
+        }
+        setCurrentForm((current) => ({
+          ...current,
+          data: {
+            ...current.data,
+            attributes: {
+              ...current.data.attributes,
+              documentEvidence: { present: true },
+            },
+          },
+        }))
+        setEvidenceFile(undefined)
+        if (evidenceInput.current) evidenceInput.current.value = ''
+      }
+
+      setSaved(true)
+      return true
+    } catch (cause) {
+      setError(saveErrorMessage(cause))
+      setSessionExpired(
+        cause instanceof ApplicantApplicationApiError && cause.status === 401,
+      )
+      return false
+    } finally {
+      savingRef.current = false
+      setIsSaving(false)
+    }
+  }
+
+  async function advance(): Promise<void> {
+    const requiredForm = document.querySelector('form')
+    if (requiredForm && !requiredForm.reportValidity()) return
+    if (!(await saveDraft())) return
+    if (step === 'personal-details') {
+      void navigate(`/applications/${applicationId}/identity-and-address`)
+    } else {
+      void navigate(`/applications/${applicationId}/review`)
+    }
+  }
+
+  const continueLabel =
+    step === 'personal-details' ? 'Continue' : 'Save and review'
+
   return (
     <main className={styles.page}>
       <Box component="div" className={styles.stepContent}>
@@ -111,48 +323,104 @@ export default function CurrentApplicationStepPage({
               : 'Identity and address'}
           </Typography>
           <Typography tone="muted">
-            Complete this form as part of the frontend implementation exercise.
+            Save draft stores your form answers. Document evidence uses a
+            separate upload process.
           </Typography>
+          {currentForm.data.attributes.documentEvidence.present ? (
+            <Alert severity="info">
+              Your identity document is on file. You can continue without
+              uploading it again.
+            </Alert>
+          ) : null}
+          {error ? (
+            <Alert role="alert" severity="error">
+              {error}{' '}
+              {sessionExpired ? (
+                <Link
+                  href={accountAccessHref(
+                    '/sign-in',
+                    `/applications/${applicationId}/${step}`,
+                  )}
+                  onClick={(event) => {
+                    event.preventDefault()
+                    void navigate(
+                      accountAccessHref(
+                        '/sign-in',
+                        `/applications/${applicationId}/${step}`,
+                      ),
+                    )
+                  }}
+                >
+                  Sign in
+                </Link>
+              ) : null}
+            </Alert>
+          ) : null}
+          {saved ? (
+            <Alert role="status" severity="success">
+              Your form answers were saved.
+            </Alert>
+          ) : null}
           <Stack
             component="form"
             className={styles.stepForm}
             onSubmit={(event) => {
               event.preventDefault()
-              advance()
+              void advance()
             }}
             spacing={2}
           >
-            {fields[step].map((label) => (
-              <TextField key={label} label={`${label} (required)`} required />
+            {fields[step].map(({ key, label, type }) => (
+              <TextField
+                key={key}
+                disabled={isSaving}
+                label={label}
+                name={key}
+                onChange={(event) => updateAnswer(key, event.target.value)}
+                required
+                type={type}
+                value={typeof answers[key] === 'string' ? answers[key] : ''}
+              />
             ))}
             {step === 'personal-details' ? (
               <label>
-                <input required type="checkbox" /> I confirm these details are
-                accurate and belong to me.
+                <input
+                  checked={answers.consentConfirmed === true}
+                  disabled={isSaving}
+                  name="consentConfirmed"
+                  onChange={(event) =>
+                    updateAnswer('consentConfirmed', event.target.checked)
+                  }
+                  required
+                  type="checkbox"
+                />{' '}
+                I confirm these details are accurate and belong to me.
               </label>
             ) : (
               <>
                 <label htmlFor="document-evidence">
-                  Document evidence (required)
+                  {currentForm.data.attributes.documentEvidence.present
+                    ? 'Document evidence (already on file)'
+                    : 'Document evidence (required)'}
                 </label>
                 <input
                   id="document-evidence"
+                  ref={evidenceInput}
                   type="file"
                   accept="image/jpeg,image/png"
-                  required
+                  disabled={isSaving}
+                  required={
+                    !currentForm.data.attributes.documentEvidence.present
+                  }
+                  onChange={(event) => {
+                    setEvidenceFile(event.currentTarget.files?.[0])
+                    setSaved(false)
+                    setError(undefined)
+                    setSessionExpired(false)
+                  }}
                 />
               </>
             )}
-            {missing ? (
-              <Alert role="alert" severity="error">
-                Complete all required fields before continuing.
-              </Alert>
-            ) : null}
-            {saved ? (
-              <Alert role="status" severity="success">
-                Your progress was saved in this prototype.
-              </Alert>
-            ) : null}
             <Stack
               component="div"
               className={styles.formActions}
@@ -162,18 +430,27 @@ export default function CurrentApplicationStepPage({
               <Button
                 type="button"
                 variant="quiet"
+                disabled={isSaving}
                 onClick={() =>
                   step === 'personal-details'
                     ? void navigate('/applications/current')
                     : void navigate(
-                        `/applications/${params.applicationId}/personal-details`,
+                        `/applications/${applicationId}/personal-details`,
                       )
                 }
               >
                 Back
               </Button>
-              <Button type="submit">
-                {step === 'personal-details' ? 'Continue' : 'Save and review'}
+              <Button
+                disabled={isSaving}
+                onPress={() => void saveDraft()}
+                type="button"
+                variant="secondary"
+              >
+                {isSaving ? 'Saving...' : 'Save draft'}
+              </Button>
+              <Button disabled={isSaving} type="submit">
+                {isSaving ? 'Saving...' : continueLabel}
               </Button>
             </Stack>
           </Stack>
@@ -181,4 +458,31 @@ export default function CurrentApplicationStepPage({
       </Box>
     </main>
   )
+}
+
+function isApplicationStep(step: string): step is ApplicantApplicationStep {
+  return step === 'personal-details' || step === 'identity-and-address'
+}
+
+function saveErrorMessage(error: unknown): string {
+  if (!(error instanceof ApplicantApplicationApiError)) {
+    return 'Your draft could not be saved. Check your connection and try again.'
+  }
+  if (error.status === 401) {
+    return 'Your session has expired. Sign in again before saving this draft.'
+  }
+  if (error.status === 403) {
+    return 'Your draft could not be saved. Refresh the page and sign in again if needed.'
+  }
+  if (error.status === 404) {
+    return 'This application draft could not be found.'
+  }
+  if (error.status === 409) {
+    return 'This draft changed elsewhere. Your edits are still here; reload the saved draft before trying again.'
+  }
+  if (error.status === 422) {
+    return error.message
+  }
+  if (error.status === 0) return error.message
+  return 'Your draft could not be saved. Please try again.'
 }
