@@ -10,6 +10,8 @@ import {
 } from '@kyc/ui'
 import { useEffect, useRef, useState } from 'react'
 
+import { readJsonApiErrors } from '../api/json-api-errors'
+
 import { accountAccessHref } from './-return-target'
 import styles from './account-access.module.css'
 
@@ -36,11 +38,6 @@ type RegistrationFailure =
 
 type RegistrationResult =
   { kind: 'success' } | { kind: 'failure'; failure: RegistrationFailure }
-
-interface ApiValidationError {
-  pointer?: string
-  detail?: string
-}
 
 async function registerApplicant(
   email: string,
@@ -76,7 +73,7 @@ async function registerApplicant(
     return { kind: 'failure', failure: { kind: 'duplicate' } }
   }
   if (response.status === 429) {
-    const errors = await readApiValidationErrors(response)
+    const errors = await readJsonApiErrors(response)
     const retryAfter = Number(response.headers.get('Retry-After'))
     return {
       kind: 'failure',
@@ -99,7 +96,7 @@ async function registerApplicant(
 async function readValidationFailure(
   response: Response,
 ): Promise<Extract<RegistrationFailure, { kind: 'validation' }>> {
-  const errors = await readApiValidationErrors(response)
+  const errors = await readJsonApiErrors(response)
   const emailErrors: string[] = []
   const passwordErrors: string[] = []
   const formErrors: string[] = []
@@ -125,35 +122,6 @@ async function readValidationFailure(
     passwordError: passwordErrors.length ? passwordErrors.join(' ') : undefined,
     formError: formErrors.length ? formErrors.join(' ') : undefined,
   }
-}
-
-async function readApiValidationErrors(
-  response: Response,
-): Promise<ApiValidationError[]> {
-  try {
-    const payload: unknown = await response.json()
-    if (!isRecord(payload) || !Array.isArray(payload.errors)) return []
-
-    return payload.errors.flatMap((error): ApiValidationError[] => {
-      if (!isRecord(error)) return []
-      const source = isRecord(error.source) ? error.source : undefined
-      return [
-        {
-          pointer:
-            source && typeof source.pointer === 'string'
-              ? source.pointer
-              : undefined,
-          detail: typeof error.detail === 'string' ? error.detail : undefined,
-        },
-      ]
-    })
-  } catch {
-    return []
-  }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null
 }
 
 function validateRegistration(
@@ -236,8 +204,15 @@ export function CreateAccountForm({
     }
 
     setIsSubmitting(true)
-    const result = await registerApplicant(email.trim(), password)
-    setIsSubmitting(false)
+    let result: RegistrationResult
+    try {
+      result = await registerApplicant(email.trim(), password)
+    } catch {
+      setFormError('We could not create your account. Please try again.')
+      return
+    } finally {
+      setIsSubmitting(false)
+    }
 
     if (result.kind === 'success') {
       setPassword('')

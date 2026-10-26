@@ -10,6 +10,8 @@ import {
 } from '@kyc/ui'
 import { useEffect, useRef, useState } from 'react'
 
+import { isRecord, readJsonApiErrors } from '../api/json-api-errors'
+
 import { accountAccessHref, isSafeJourneyPath } from './-return-target'
 import styles from './account-access.module.css'
 
@@ -34,11 +36,6 @@ type SignInFailure =
 type SignInResult =
   | { kind: 'success'; href: string }
   | { kind: 'failure'; failure: SignInFailure }
-
-interface ApiError {
-  pointer?: string
-  detail?: string
-}
 
 async function signInApplicant(
   email: string,
@@ -93,7 +90,7 @@ async function signInApplicant(
     return { kind: 'failure', failure: { kind: 'invalid-credentials' } }
   }
   if (response.status === 429) {
-    const errors = await readApiErrors(response)
+    const errors = await readJsonApiErrors(response)
     const retryAfter = Number(response.headers.get('Retry-After'))
     return {
       kind: 'failure',
@@ -116,7 +113,7 @@ async function signInApplicant(
 async function readValidationFailure(
   response: Response,
 ): Promise<Extract<SignInFailure, { kind: 'validation' }>> {
-  const errors = await readApiErrors(response)
+  const errors = await readJsonApiErrors(response)
   const emailErrors: string[] = []
   const passwordErrors: string[] = []
   const formErrors: string[] = []
@@ -142,33 +139,6 @@ async function readValidationFailure(
     passwordError: passwordErrors.length ? passwordErrors.join(' ') : undefined,
     formError: formErrors.length ? formErrors.join(' ') : undefined,
   }
-}
-
-async function readApiErrors(response: Response): Promise<ApiError[]> {
-  try {
-    const payload: unknown = await response.json()
-    if (!isRecord(payload) || !Array.isArray(payload.errors)) return []
-
-    return payload.errors.flatMap((error): ApiError[] => {
-      if (!isRecord(error)) return []
-      const source = isRecord(error.source) ? error.source : undefined
-      return [
-        {
-          pointer:
-            source && typeof source.pointer === 'string'
-              ? source.pointer
-              : undefined,
-          detail: typeof error.detail === 'string' ? error.detail : undefined,
-        },
-      ]
-    })
-  } catch {
-    return []
-  }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null
 }
 
 export function SignInForm({

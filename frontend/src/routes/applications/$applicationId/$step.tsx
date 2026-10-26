@@ -59,24 +59,10 @@ const answerKeys: Record<
   (keyof ApplicantApplicationAnswers)[]
 > = {
   'personal-details': [
-    'name',
-    'dateOfBirth',
-    'country',
-    'nationality',
-    'email',
-    'phone',
+    ...fields['personal-details'].map(({ key }) => key),
     'consentConfirmed',
   ],
-  'identity-and-address': [
-    'documentType',
-    'documentNumber',
-    'documentCountry',
-    'expiry',
-    'street',
-    'city',
-    'postal',
-    'residentialCountry',
-  ],
+  'identity-and-address': fields['identity-and-address'].map(({ key }) => key),
 }
 
 export async function clientLoader({
@@ -101,8 +87,9 @@ export async function clientLoader({
     const status =
       error instanceof ApplicantApplicationApiError ? error.status : 0
     if (status === 401) {
+      const url = new URL(request.url)
       throw redirect(
-        accountAccessHref('/sign-in', new URL(request.url).pathname),
+        accountAccessHref('/sign-in', `${url.pathname}${url.search}`),
       )
     }
     return {
@@ -147,7 +134,7 @@ export default function CurrentApplicationStepPage({
               <Button
                 type="button"
                 variant="secondary"
-                onClick={() =>
+                onPress={() =>
                   void navigate(
                     `/applications/${params.applicationId}/identity-and-address`,
                   )
@@ -242,6 +229,7 @@ function LoadedApplicationStep({
       ),
     ) as ApplicantApplicationAnswers
 
+    let answersSaved = false
     try {
       const updatedForm = await saveApplicantApplicationForm(
         applicationId,
@@ -255,6 +243,7 @@ function LoadedApplicationStep({
         ...current,
         ...updatedForm.data.attributes.answers,
       }))
+      answersSaved = true
 
       if (step === 'identity-and-address' && evidenceFile) {
         const uploadedEvidence =
@@ -285,7 +274,11 @@ function LoadedApplicationStep({
       setSaved(true)
       return true
     } catch (cause) {
-      setError(saveErrorMessage(cause))
+      setError(
+        answersSaved
+          ? evidenceUploadErrorMessage(cause)
+          : saveErrorMessage(cause),
+      )
       setSessionExpired(
         cause instanceof ApplicantApplicationApiError && cause.status === 401,
       )
@@ -296,9 +289,8 @@ function LoadedApplicationStep({
     }
   }
 
-  async function advance(): Promise<void> {
-    const requiredForm = document.querySelector('form')
-    if (requiredForm && !requiredForm.reportValidity()) return
+  async function advance(form: HTMLFormElement): Promise<void> {
+    if (!form.reportValidity()) return
     if (!(await saveDraft())) return
     if (step === 'personal-details') {
       void navigate(`/applications/${applicationId}/identity-and-address`)
@@ -366,7 +358,7 @@ function LoadedApplicationStep({
             className={styles.stepForm}
             onSubmit={(event) => {
               event.preventDefault()
-              void advance()
+              void advance(event.currentTarget)
             }}
             spacing={2}
           >
@@ -431,7 +423,7 @@ function LoadedApplicationStep({
                 type="button"
                 variant="quiet"
                 disabled={isSaving}
-                onClick={() =>
+                onPress={() =>
                   step === 'personal-details'
                     ? void navigate('/applications/current')
                     : void navigate(
@@ -485,4 +477,15 @@ function saveErrorMessage(error: unknown): string {
   }
   if (error.status === 0) return error.message
   return 'Your draft could not be saved. Please try again.'
+}
+
+function evidenceUploadErrorMessage(error: unknown): string {
+  let detail = 'Check your connection and try again.'
+  if (error instanceof ApplicantApplicationApiError) {
+    detail =
+      error.status === 401
+        ? 'Your session has expired. Sign in again to upload the document.'
+        : error.message
+  }
+  return `Your form answers were saved, but the document upload failed. ${detail}`
 }

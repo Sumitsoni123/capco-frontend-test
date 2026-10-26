@@ -285,6 +285,31 @@ describe('CreateAccountForm', () => {
     )
   })
 
+  it('releases the submit state after an unexpected request error', async () => {
+    const user = userEvent.setup()
+    const brokenResponse = new Proxy(new Response(), {
+      get(target, property, receiver) {
+        if (property === 'status') {
+          throw new Error('Unexpected response failure')
+        }
+        return Reflect.get(target, property, receiver)
+      },
+    })
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(brokenResponse)
+    render(<CreateAccountForm />)
+    await fillValidForm(user)
+
+    await user.click(screen.getByRole('button', { name: 'Create account' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'We could not create your account. Please try again.',
+    )
+    expect(screen.getByRole('button', { name: 'Create account' })).toBeEnabled()
+    fetchSpy.mockRestore()
+  })
+
   it('prevents duplicate submissions while the request is pending', async () => {
     const user = userEvent.setup()
     let releaseResponse: () => void = () => undefined

@@ -39,8 +39,9 @@ export async function clientLoader({
     }
   } catch (error) {
     if (error instanceof ApplicantApplicationApiError && error.status === 401) {
+      const url = new URL(request.url)
       throw redirect(
-        accountAccessHref('/sign-in', new URL(request.url).pathname),
+        accountAccessHref('/sign-in', `${url.pathname}${url.search}`),
       )
     }
     return {

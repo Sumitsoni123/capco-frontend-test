@@ -86,6 +86,7 @@ function renderJourney(loaderData: unknown) {
 function renderStep(
   step: 'personal-details' | 'identity-and-address',
   form: ApplicantApplicationFormDocument,
+  includeUnrelatedForm = false,
 ) {
   const props = {
     params: { applicationId, step },
@@ -93,6 +94,11 @@ function renderStep(
   } as unknown as Parameters<typeof CurrentApplicationStepPage>[0]
   return render(
     <MemoryRouter initialEntries={[`/applications/${applicationId}/${step}`]}>
+      {includeUnrelatedForm ? (
+        <form aria-label="Unrelated form">
+          <input aria-label="Unrelated required field" required />
+        </form>
+      ) : null}
       <CurrentApplicationStepPage {...props} />
       <CurrentPath />
     </MemoryRouter>,
@@ -168,6 +174,71 @@ describe('Applicant save and resume', () => {
     )
   })
 
+  it('preserves query parameters when redirecting an expired journey session', async () => {
+    server.use(
+      http.get(currentApplicationUrl, () =>
+        HttpResponse.json(
+          { errors: [{ detail: 'Sign in to continue.' }] },
+          { status: 401 },
+        ),
+      ),
+    )
+
+    let redirectResponse: unknown
+    try {
+      await loadCurrentApplication({
+        request: new Request(
+          'http://localhost/applications/current?locale=en&ref=dashboard',
+        ),
+      } as Parameters<typeof loadCurrentApplication>[0])
+    } catch (error) {
+      redirectResponse = error
+    }
+
+    expect(redirectResponse).toBeInstanceOf(Response)
+    if (redirectResponse instanceof Response) {
+      const location = redirectResponse.headers.get('Location')
+      expect(location).not.toBeNull()
+      expect(
+        new URL(location!, 'http://localhost').searchParams.get('returnTo'),
+      ).toBe('/applications/current?locale=en&ref=dashboard')
+    }
+  })
+
+  it('preserves query parameters when redirecting an expired form session', async () => {
+    server.use(
+      http.get(formUrl, () =>
+        HttpResponse.json(
+          { errors: [{ detail: 'Sign in to continue.' }] },
+          { status: 401 },
+        ),
+      ),
+    )
+
+    let redirectResponse: unknown
+    try {
+      await loadApplicationStep({
+        params: { applicationId, step: 'personal-details' },
+        request: new Request(
+          `http://localhost/applications/${applicationId}/personal-details?locale=en&ref=dashboard`,
+        ),
+      } as Parameters<typeof loadApplicationStep>[0])
+    } catch (error) {
+      redirectResponse = error
+    }
+
+    expect(redirectResponse).toBeInstanceOf(Response)
+    if (redirectResponse instanceof Response) {
+      const location = redirectResponse.headers.get('Location')
+      expect(location).not.toBeNull()
+      expect(
+        new URL(location!, 'http://localhost').searchParams.get('returnTo'),
+      ).toBe(
+        `/applications/${applicationId}/personal-details?locale=en&ref=dashboard`,
+      )
+    }
+  })
+
   it('shows Start when no draft exists and creates one with the CSRF token', async () => {
     const user = userEvent.setup()
     setCsrfCookie()
@@ -191,8 +262,49 @@ describe('Applicant save and resume', () => {
     ).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'Start application' }))
 
-    expect(screen.getByLabelText('Current path')).toHaveTextContent(
-      applicationDocument.data.attributes.href,
+    await waitFor(() =>
+      expect(screen.getByLabelText('Current path')).toHaveTextContent(
+        applicationDocument.data.attributes.href,
+      ),
+    )
+  })
+
+  it('validates the submitted step form rather than an unrelated page form', async () => {
+    const user = userEvent.setup()
+    server.use(
+      http.patch(formUrl, () =>
+        HttpResponse.json(
+          formDocument(
+            {
+              name: 'Ada Lovelace',
+              dateOfBirth: '1815-12-10',
+              country: 'United Kingdom',
+              nationality: 'British',
+              email: 'ada@example.com',
+              phone: '555-0100',
+              consentConfirmed: true,
+            },
+            5,
+          ),
+          { status: 200 },
+        ),
+      ),
+    )
+    renderStep('personal-details', formDocument(), true)
+
+    await user.type(screen.getByLabelText('Name'), 'Ada Lovelace')
+    await user.type(screen.getByLabelText('Date of birth'), '1815-12-10')
+    await user.type(screen.getByLabelText('Country'), 'United Kingdom')
+    await user.type(screen.getByLabelText('Nationality'), 'British')
+    await user.type(screen.getByLabelText('Email'), 'ada@example.com')
+    await user.type(screen.getByLabelText('Phone'), '555-0100')
+    await user.click(screen.getByRole('checkbox'))
+    await user.click(screen.getByRole('button', { name: 'Continue' }))
+
+    await waitFor(() =>
+      expect(screen.getByLabelText('Current path')).toHaveTextContent(
+        `/applications/${applicationId}/identity-and-address`,
+      ),
     )
   })
 
@@ -505,6 +617,9 @@ describe('Applicant save and resume', () => {
     await user.click(screen.getByRole('button', { name: 'Save draft' }))
 
     expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Your form answers were saved, but the document upload failed.',
+    )
+    expect(screen.getByRole('alert')).toHaveTextContent(
       'The selected document could not be uploaded.',
     )
     expect(screen.getByLabelText('Document number')).toHaveValue('P7654321')
