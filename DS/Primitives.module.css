@@ -129,7 +129,7 @@
   color: #526176;
   font-size: 0.875rem;
 }
-.description[data-slot='errorMessage'] {
+.description[slot='errorMessage'] {
   color: #b42318;
 }
 .table {
